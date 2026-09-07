@@ -184,3 +184,155 @@ trait StorageProxy {
     async fn get_item(&mut self, index: usize) -> zlink::Result<Result<Item, StorageError>>;
     async fn add_item(&mut self, item: String) -> zlink::Result<Result<(), StorageError>>;
 }
+
+// Regression test (https://github.com/z-galaxy/zlink/issues/315): interface names differing
+// only in case used to fold to the same generated const identifier.
+#[test_log::test(tokio::test(flavor = "multi_thread"))]
+async fn case_distinct_interface_names() -> Result<(), Box<dyn std::error::Error>> {
+    use zlink::varlink_service::Proxy as VarlinkProxy;
+
+    let dir = tempfile::tempdir()?;
+    let socket_path = dir.path().join("case-distinct.sock");
+
+    let listener = bind(&socket_path).unwrap();
+    let service = CaseDistinctService;
+    let server = Server::new(listener, service);
+    tokio::select! {
+        res = server.run() => res?,
+        res = async {
+            let mut conn = connect(&socket_path).await?;
+
+            // Verify GetInterfaceDescription resolves each interface to its own description.
+            let lower_desc = conn
+                .get_interface_description("org.example.foo")
+                .await?
+                .unwrap();
+            let lower_interface = lower_desc.parse()?;
+            assert_eq!(lower_interface.name(), "org.example.foo");
+            let lower_methods: Vec<_> = lower_interface.methods().map(|m| m.name()).collect();
+            assert_eq!(lower_methods.as_slice(), ["LowerMethod"]);
+
+            let upper_desc = conn
+                .get_interface_description("org.example.Foo")
+                .await?
+                .unwrap();
+            let upper_interface = upper_desc.parse()?;
+            assert_eq!(upper_interface.name(), "org.example.Foo");
+            let upper_methods: Vec<_> = upper_interface.methods().map(|m| m.name()).collect();
+            assert_eq!(upper_methods.as_slice(), ["UpperMethod"]);
+
+            // Verify method calls are also routed to the correct interface, not just
+            // GetInterfaceDescription.
+            conn.lower_method().await?.unwrap();
+            conn.upper_method().await?.unwrap();
+
+            Ok::<(), Box<dyn std::error::Error>>(())
+        } => res?,
+    }
+
+    Ok(())
+}
+
+/// A service exercising two interface names differing only in case.
+struct CaseDistinctService;
+
+#[zlink::service]
+impl CaseDistinctService {
+    #[zlink(interface = "org.example.foo")]
+    async fn lower_method(&self) {}
+
+    #[zlink(interface = "org.example.Foo")]
+    async fn upper_method(&self) {}
+}
+
+/// Error type for org.example.foo (never actually returned; needed for the proxy signature).
+#[derive(Debug, Clone, PartialEq, zlink::ReplyError, introspect::ReplyError)]
+#[zlink(interface = "org.example.foo")]
+enum LowerError {}
+
+/// Error type for org.example.Foo (never actually returned; needed for the proxy signature).
+#[derive(Debug, Clone, PartialEq, zlink::ReplyError, introspect::ReplyError)]
+#[zlink(interface = "org.example.Foo")]
+enum UpperError {}
+
+/// Proxy for org.example.foo interface.
+#[zlink::proxy("org.example.foo")]
+trait LowerProxy {
+    async fn lower_method(&mut self) -> zlink::Result<Result<(), LowerError>>;
+}
+
+/// Proxy for org.example.Foo interface.
+#[zlink::proxy("org.example.Foo")]
+trait UpperProxy {
+    async fn upper_method(&mut self) -> zlink::Result<Result<(), UpperError>>;
+}
+
+// Regression test (https://github.com/z-galaxy/zlink/issues/315): service type names differing
+// only in case used to collapse to the same generated interface constant identifier.
+#[test_log::test(tokio::test(flavor = "multi_thread"))]
+async fn case_distinct_service_type_names() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    let socket_path_a = dir.path().join("case-distinct-a.sock");
+    let socket_path_b = dir.path().join("case-distinct-b.sock");
+
+    let listener_a = bind(&socket_path_a).unwrap();
+    let server_a = Server::new(listener_a, FooBar);
+    let listener_b = bind(&socket_path_b).unwrap();
+    let server_b = Server::new(listener_b, Foobar);
+
+    tokio::select! {
+        res = server_a.run() => res?,
+        res = server_b.run() => res?,
+        res = async {
+            let mut conn_a = connect(&socket_path_a).await?;
+            conn_a.method_a().await?.unwrap();
+
+            let mut conn_b = connect(&socket_path_b).await?;
+            conn_b.method_b().await?.unwrap();
+
+            Ok::<(), Box<dyn std::error::Error>>(())
+        } => res?,
+    }
+
+    Ok(())
+}
+
+/// A service type whose name differs from `Foobar` only in case.
+struct FooBar;
+
+#[zlink::service]
+impl FooBar {
+    #[zlink(interface = "org.example.a")]
+    async fn method_a(&self) {}
+}
+
+/// A service type whose name differs from `FooBar` only in case.
+struct Foobar;
+
+#[zlink::service]
+impl Foobar {
+    #[zlink(interface = "org.example.b")]
+    async fn method_b(&self) {}
+}
+
+/// Error type for org.example.a (never actually returned; needed for the proxy signature).
+#[derive(Debug, Clone, PartialEq, zlink::ReplyError, introspect::ReplyError)]
+#[zlink(interface = "org.example.a")]
+enum AError {}
+
+/// Error type for org.example.b (never actually returned; needed for the proxy signature).
+#[derive(Debug, Clone, PartialEq, zlink::ReplyError, introspect::ReplyError)]
+#[zlink(interface = "org.example.b")]
+enum BError {}
+
+/// Proxy for org.example.a interface.
+#[zlink::proxy("org.example.a")]
+trait AProxy {
+    async fn method_a(&mut self) -> zlink::Result<Result<(), AError>>;
+}
+
+/// Proxy for org.example.b interface.
+#[zlink::proxy("org.example.b")]
+trait BProxy {
+    async fn method_b(&mut self) -> zlink::Result<Result<(), BError>>;
+}
