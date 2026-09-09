@@ -15,7 +15,7 @@ name = "zlink-codegen"
 path = "src/main.rs"
 
 [dependencies]
-zlink = { path = "../zlink", version = "0.7.0", features = [
+zlink = { path = "../zlink", version = "0.7.1", features = [
     "idl",
     "idl-parse",
 ] }

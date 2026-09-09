@@ -2200,7 +2200,7 @@ dependencies = [
 
 [[package]]
 name = "zlink"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "clap",
  "colored 3.0.0",
@@ -2236,7 +2236,7 @@ dependencies = [
 
 [[package]]
 name = "zlink-core"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "bytes",
  "chrono",
@@ -2266,14 +2266,14 @@ dependencies = [
 
 [[package]]
 name = "zlink-idl"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "winnow",
 ]
 
 [[package]]
 name = "zlink-macros"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "futures-util",
  "proc-macro2",
@@ -2292,7 +2292,7 @@ dependencies = [
 
 [[package]]
 name = "zlink-smol"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "async-broadcast",
  "async-channel",
@@ -2310,7 +2310,7 @@ dependencies = [
 
 [[package]]
 name = "zlink-tokio"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "futures-util",
  "pin-project-lite",
