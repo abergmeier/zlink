@@ -8,6 +8,9 @@ use std::{
 };
 
 #[cfg(target_os = "linux")]
+use std::path::PathBuf;
+
+#[cfg(target_os = "linux")]
 use crate::unix_utils::{self, SocketRole};
 use crate::{Connection, Result};
 
@@ -30,7 +33,7 @@ where
     Ok(Listener::new(
         Async::new(std_listener)?,
         #[cfg(target_os = "linux")]
-        Some(path),
+        Some(path.to_owned()),
     ))
 }
 
@@ -44,18 +47,25 @@ where
 #[derive(Debug)]
 pub struct Listener {
     listener: Async<StdUnixListener>,
+    /// The path [`bind`] was given, if this listener came from it.
+    #[cfg(target_os = "linux")]
+    path: Option<PathBuf>,
 }
 
 impl Listener {
     /// Wrap a bound listener, tagging it and, when `path` is known, its entrypoint inode.
     fn new(
         listener: Async<StdUnixListener>,
-        #[cfg(target_os = "linux")] path: Option<&Path>,
+        #[cfg(target_os = "linux")] path: Option<PathBuf>,
     ) -> Self {
         #[cfg(target_os = "linux")]
-        unix_utils::tag_listener(&listener, path);
+        unix_utils::tag_listener(&listener, path.as_deref());
 
-        Self { listener }
+        Self {
+            listener,
+            #[cfg(target_os = "linux")]
+            path,
+        }
     }
 }
 
@@ -68,6 +78,19 @@ impl crate::Listener for Listener {
         unix_utils::tag_socket(&stream, SocketRole::Server);
 
         Ok(Some(super::Stream::try_from(stream)?.into()))
+    }
+
+    #[cfg(target_os = "linux")]
+    fn set_xattr(&self, name: &str, value: impl AsRef<[u8]>) -> Result<()> {
+        let Some(path) = &self.path else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "the entrypoint inode of a listener adopted from a file descriptor is not known",
+            )
+            .into());
+        };
+
+        unix_utils::set_entrypoint_xattr(path, name, value.as_ref()).map_err(Into::into)
     }
 }
 
