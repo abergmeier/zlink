@@ -159,6 +159,34 @@ pub fn tag_listener(fd: impl AsFd, path: Option<&Path>) {
     }
 }
 
+/// Set an extended attribute on the entrypoint socket inode at `path`.
+///
+/// `path` is the one handed to `bind()`. Like [`tag_listener`], this only ever writes through an
+/// absolute path. This backs
+/// [`Listener::set_xattr`] for Unix socket listeners; see there for the errors reported.
+///
+/// [`Listener::set_xattr`]: crate::Listener::set_xattr
+#[cfg(target_os = "linux")]
+#[doc(hidden)]
+pub fn set_entrypoint_xattr(path: &Path, name: &str, value: &[u8]) -> io::Result<()> {
+    use rustix::fs::{XattrFlags, lsetxattr};
+
+    if !path.is_absolute() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "the entrypoint inode of this listener is not known",
+        ));
+    }
+    if !socket_xattr_supported() {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "the kernel does not support extended attributes on socket inodes",
+        ));
+    }
+
+    lsetxattr(path, name, value, XattrFlags::empty()).map_err(io::Error::from)
+}
+
 /// The value of the extended attribute `name` of the open file descriptor `fd`.
 ///
 /// Meant for tests to read tags back; the buffer suffices for the values zlink writes.
@@ -640,5 +668,25 @@ mod tests {
         // so neither helper touches the file system with one.
         tag_listener(&listener, Some(Path::new("test.sock")));
         assert!(read_lxattr(&path, VARLINK_XATTR).is_err());
+
+        let err =
+            set_entrypoint_xattr(Path::new("test.sock"), "user.zlink.test", b"1").unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn set_entrypoint_xattr_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.sock");
+        let _listener = UnixListener::bind(&path).unwrap();
+
+        let result = set_entrypoint_xattr(&path, "user.zlink.test", b"1");
+
+        if socket_xattr_supported() {
+            result.unwrap();
+            assert_eq!(read_lxattr(&path, "user.zlink.test").unwrap(), b"1");
+        } else {
+            assert_eq!(result.unwrap_err().kind(), io::ErrorKind::Unsupported);
+        }
     }
 }

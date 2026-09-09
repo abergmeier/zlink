@@ -12,6 +12,32 @@ pub trait Listener: core::fmt::Debug {
     /// Returns `Ok(None)` to signal that no more connections will be produced. Once `Ok(None)`
     /// has been returned, subsequent calls must pend forever — the listener is considered closed.
     fn accept(&mut self) -> impl Future<Output = Result<Option<Connection<Self::Socket>>>>;
+
+    /// Set an extended attribute on the socket inode this listener is bound to.
+    ///
+    /// Varlink tooling can read attributes off a service's entrypoint socket without connecting
+    /// to it. Listeners bound to a Unix socket in the file system already carry `user.varlink`
+    /// set to `entrypoint`; this lets a service publish additional attributes of its own, for
+    /// example the `user.userdb.*` attributes systemd's user database consults to skip providers
+    /// that cannot answer a query. Attribute names normally live in the `user.` namespace.
+    /// Extended attributes on sockets are a Linux feature, so this method only exists there.
+    ///
+    /// # Errors
+    ///
+    /// Fails with [`std::io::ErrorKind::Unsupported`] if the listener is not backed by a socket
+    /// inode in the file system (the default implementation) or if the kernel does not support
+    /// extended attributes on socket inodes (Linux 7.1 or newer is required), with
+    /// [`std::io::ErrorKind::InvalidInput`] if the entrypoint inode is not known because the
+    /// listener was adopted from a file descriptor or bound to a relative path, and otherwise with
+    /// whatever error setting the attribute produced.
+    #[cfg(all(feature = "std", target_os = "linux"))]
+    fn set_xattr(&self, _name: &str, _value: impl AsRef<[u8]>) -> Result<()> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "listener is not backed by a socket inode in the file system",
+        )
+        .into())
+    }
 }
 
 /// A listener that already has a socket.
