@@ -284,6 +284,39 @@ Beyond `unix::bind`, a `Listener` can be created from an inherited file descript
 socket, `ReadyListener` wraps that one connection; `Server::run` then serves it and returns cleanly
 when the client disconnects.
 
+## Discoverable sockets
+
+On Linux, zlink tags every socket it creates with a `user.varlink` extended attribute, following
+the convention systemd's `sd-varlink` established in v262: the socket inode `bind` creates is
+marked `entrypoint`, the listener itself `listen`, connected client sockets `client` and accepted
+ones `server`. This is what lets `varlinkctl list-sockets` enumerate the Varlink services on a
+system, and what future eBPF-based tracing of Varlink traffic will key on. Tagging is best effort:
+kernels older than Linux 7.1 do not allow extended attributes on sockets and are silently tolerated.
+Extended attributes are only readable by users who may read the inode itself, so a restrictive
+umask at `bind` time also hides the tag from other users. Like `sd-varlink`, zlink only tags the
+inode when `bind` was given an absolute path; listeners adopted from a file descriptor or bound
+to a relative path only get the `listen` tag, since their inode cannot be located safely.
+
+A service can publish attributes of its own on its entrypoint inode with `Listener::set_xattr`, so
+that clients and tooling learn something about it before connecting. systemd's user database, for
+instance, reads `user.userdb.uid` and friends to skip providers that cannot serve a query. The
+method is part of the `Listener` trait and, like the attributes themselves, only exists on Linux.
+It fails with `Unsupported` for listeners without a socket of their own such as `ReadyListener`,
+and with `InvalidInput` for a listener adopted from a file descriptor or bound to a relative path,
+whose entrypoint inode is unknown.
+
+```rust,noplayground
+# use zlink::Listener as _;
+# fn example() -> Result<(), Box<dyn std::error::Error>> {
+let listener = zlink::tokio::unix::bind("/run/user/1000/io.example.Accounts")?;
+#[cfg(target_os = "linux")]
+if let Err(e) = listener.set_xattr("user.userdb.uid", "1000-1999") {
+    eprintln!("could not publish the UID range: {e}");
+}
+# Ok(())
+# }
+```
+
 ## Under the hood: the `Service` trait
 
 The `service` macro is sugar for implementing the `zlink::Service` trait, whose `handle` method

@@ -1,38 +1,101 @@
-use std::os::fd::OwnedFd;
+use std::{
+    os::fd::{AsFd, BorrowedFd, OwnedFd},
+    path::Path,
+};
 
+#[cfg(target_os = "linux")]
+use std::path::PathBuf;
+
+#[cfg(target_os = "linux")]
+use crate::unix_utils::{self, SocketRole};
 use crate::{Connection, Result};
 
 /// Create a new unix domain socket listener and bind it to `path`.
+///
+/// On Linux the listener socket is tagged with a `user.varlink` extended attribute set to `listen`
+/// and, if `path` is absolute, the socket inode created there with one set to `entrypoint`, so that
+/// tools like `varlinkctl list-sockets` recognise them as Varlink sockets. A relative `path` is not
+/// used for that, since it would be resolved against whatever the working directory is at the
+/// time. Tagging is best effort; kernels without support (older than Linux 7.1) are silently
+/// tolerated.
 pub fn bind<P>(path: P) -> Result<Listener>
 where
-    P: AsRef<std::path::Path>,
+    P: AsRef<Path>,
 {
-    tokio::net::UnixListener::bind(path)
-        .map(|listener| Listener { listener })
-        .map_err(Into::into)
+    let path = path.as_ref();
+    let listener = tokio::net::UnixListener::bind(path)?;
+
+    Ok(Listener::new(
+        listener,
+        #[cfg(target_os = "linux")]
+        Some(path.to_owned()),
+    ))
 }
 
 /// A unix domain socket listener.
+///
+/// On Linux, listeners are tagged `listen`, the socket inode [`bind`] creates at an absolute path
+/// `entrypoint` and sockets returned by [`crate::Listener::accept`] `server`. Listeners adopted
+/// from a file descriptor or bound to a relative path only get the `listen` tag, since the inode
+/// they were bound to cannot be located safely. Tagging is best effort; kernels without support
+/// (older than Linux 7.1) are silently tolerated.
 #[derive(Debug)]
 pub struct Listener {
     listener: tokio::net::UnixListener,
+    /// The path [`bind`] was given, if this listener came from it.
+    #[cfg(target_os = "linux")]
+    path: Option<PathBuf>,
+}
+
+impl Listener {
+    /// Wrap a bound listener, tagging it and, when `path` is known, its entrypoint inode.
+    fn new(
+        listener: tokio::net::UnixListener,
+        #[cfg(target_os = "linux")] path: Option<PathBuf>,
+    ) -> Self {
+        #[cfg(target_os = "linux")]
+        unix_utils::tag_listener(&listener, path.as_deref());
+
+        Self {
+            listener,
+            #[cfg(target_os = "linux")]
+            path,
+        }
+    }
 }
 
 impl crate::Listener for Listener {
     type Socket = super::Stream;
 
     async fn accept(&mut self) -> Result<Option<Connection<Self::Socket>>> {
-        self.listener
-            .accept()
-            .await
-            .map_err(Into::into)
-            .and_then(|(stream, _)| super::Stream::try_from(stream).map(Into::into).map(Some))
+        let (stream, _) = self.listener.accept().await?;
+        #[cfg(target_os = "linux")]
+        unix_utils::tag_socket(&stream, SocketRole::Server);
+
+        Ok(Some(super::Stream::try_from(stream)?.into()))
+    }
+
+    #[cfg(target_os = "linux")]
+    fn set_xattr(&self, name: &str, value: impl AsRef<[u8]>) -> Result<()> {
+        let Some(path) = &self.path else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "the entrypoint inode of a listener adopted from a file descriptor is not known",
+            )
+            .into());
+        };
+
+        unix_utils::set_entrypoint_xattr(path, name, value.as_ref()).map_err(Into::into)
     }
 }
 
 impl From<tokio::net::UnixListener> for Listener {
     fn from(listener: tokio::net::UnixListener) -> Self {
-        Listener { listener }
+        Listener::new(
+            listener,
+            #[cfg(target_os = "linux")]
+            None,
+        )
     }
 }
 
@@ -43,9 +106,19 @@ impl TryFrom<OwnedFd> for Listener {
         let std_listener = std::os::unix::net::UnixListener::from(fd);
         std_listener.set_nonblocking(true)?;
 
-        tokio::net::UnixListener::from_std(std_listener)
-            .map(|listener| Listener { listener })
-            .map_err(Into::into)
+        let listener = tokio::net::UnixListener::from_std(std_listener)?;
+
+        Ok(Listener::new(
+            listener,
+            #[cfg(target_os = "linux")]
+            None,
+        ))
+    }
+}
+
+impl AsFd for Listener {
+    fn as_fd(&self) -> BorrowedFd<'_> {
+        self.listener.as_fd()
     }
 }
 

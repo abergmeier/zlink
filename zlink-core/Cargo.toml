@@ -66,6 +66,7 @@ tokio = { version = "1.44.0", features = [
     "fs",
 ] }
 criterion = { version = "4.0.4", package = "codspeed-criterion-compat", features = ["async_tokio"] }
+tempfile = "3.14"
 
 [[bench]]
 name = "benchmarks"

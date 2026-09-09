@@ -1,3 +1,5 @@
+#[cfg(target_os = "linux")]
+use crate::unix_utils::{self, SocketRole};
 use crate::{
     Result,
     connection::socket::{self, Socket},
@@ -13,15 +15,20 @@ use zlink_core::connection::socket::ReadResult;
 pub type Connection = crate::Connection<Stream>;
 
 /// Connect to Unix Domain Socket at the given path.
+///
+/// On Linux the resulting socket is tagged with a `user.varlink` extended attribute set to
+/// `client`. Tagging is best effort; kernels without support (older than Linux 7.1) are silently
+/// tolerated.
 pub async fn connect<P>(path: P) -> Result<Connection>
 where
     P: AsRef<std::path::Path>,
 {
-    UnixStream::connect(path)
-        .await
-        .map_err(Into::into)
-        .and_then(TryInto::try_into)
-        .map(Connection::new)
+    let stream = UnixStream::connect(path).await?;
+    #[cfg(target_os = "linux")]
+    unix_utils::tag_socket(&stream, SocketRole::Client);
+    let stream = Stream::try_from(stream)?;
+
+    Ok(Connection::new(stream))
 }
 
 /// The [`Socket`] implementation using Unix Domain Sockets.
