@@ -1,4 +1,4 @@
-//! Integration tests for the `user.varlink` tagging of Unix sockets.
+//! Integration tests for the `user.varlink` tagging of Unix sockets and `Listener::set_xattr`.
 //!
 //! Kernels older than Linux 7.1 refuse extended attributes on sockets, so every test asserts the
 //! tags when the kernel supports them and their absence (with tagging staying out of the way)
@@ -8,12 +8,12 @@
 
 use std::os::{
     fd::{AsFd, OwnedFd},
-    unix::net::UnixListener as StdUnixListener,
+    unix::net::{UnixListener as StdUnixListener, UnixStream as StdUnixStream},
 };
 
 use tempfile::TempDir;
 use zlink::{
-    Listener as _,
+    Error, Listener as _,
     unix_utils::{read_fxattr, read_lxattr, socket_xattr_supported},
 };
 
@@ -68,6 +68,77 @@ async fn adopted_listener_tags_only_the_socket() {
     }
     // The path the socket was bound to is not known, so the inode is left alone.
     assert!(read_lxattr(&socket_path, VARLINK_XATTR).is_err());
+}
+
+#[tokio::test]
+async fn set_xattr_on_entrypoint() {
+    let temp_dir = TempDir::new().unwrap();
+    let socket_path = temp_dir.path().join("custom.sock");
+
+    let listener = unix::bind(&socket_path).unwrap();
+    let result = listener.set_xattr("user.zlink.test", "1");
+
+    if socket_xattr_supported() {
+        result.unwrap();
+        assert_eq!(read_lxattr(&socket_path, "user.zlink.test").unwrap(), b"1");
+    } else {
+        match result.unwrap_err() {
+            Error::Io(e) => assert_eq!(e.kind(), std::io::ErrorKind::Unsupported),
+            e => panic!("unexpected error: {e:?}"),
+        }
+    }
+}
+
+#[tokio::test]
+async fn relative_bind_path_is_never_used_for_xattrs() {
+    let bind_dir = TempDir::new().unwrap();
+    let other_dir = TempDir::new().unwrap();
+    let original_dir = std::env::current_dir().unwrap();
+
+    std::env::set_current_dir(bind_dir.path()).unwrap();
+    let listener = unix::bind("relative.sock").unwrap();
+    // A regular file where a naive relative lookup would land after the directory change. It
+    // accepts `user.*` attributes on every kernel, so it would expose a misdirected write.
+    std::env::set_current_dir(other_dir.path()).unwrap();
+    let decoy = other_dir.path().join("relative.sock");
+    std::fs::write(&decoy, b"").unwrap();
+
+    let result = listener.set_xattr("user.zlink.test", "1");
+    std::env::set_current_dir(original_dir).unwrap();
+
+    // A relative path is not trusted at all: the socket inode is not tagged, no attribute is
+    // written anywhere and the caller learns why.
+    assert!(read_lxattr(bind_dir.path().join("relative.sock"), VARLINK_XATTR).is_err());
+    assert!(read_lxattr(&decoy, "user.zlink.test").is_err());
+    match result.unwrap_err() {
+        Error::Io(e) => assert_eq!(e.kind(), std::io::ErrorKind::InvalidInput),
+        e => panic!("unexpected error: {e:?}"),
+    }
+}
+
+#[tokio::test]
+async fn ready_listener_does_not_support_xattrs() {
+    let (socket, _peer) = StdUnixStream::pair().unwrap();
+    let listener = zlink::ReadyListener::new(unix::Stream::try_from(socket).unwrap());
+
+    match listener.set_xattr("user.zlink.test", "1").unwrap_err() {
+        Error::Io(e) => assert_eq!(e.kind(), std::io::ErrorKind::Unsupported),
+        e => panic!("unexpected error: {e:?}"),
+    }
+}
+
+#[tokio::test]
+async fn set_xattr_on_adopted_listener_fails() {
+    let temp_dir = TempDir::new().unwrap();
+    let socket_path = temp_dir.path().join("adopted.sock");
+
+    let fd: OwnedFd = StdUnixListener::bind(&socket_path).unwrap().into();
+    let listener = unix::Listener::try_from(fd).unwrap();
+
+    match listener.set_xattr("user.zlink.test", "1").unwrap_err() {
+        Error::Io(e) => assert_eq!(e.kind(), std::io::ErrorKind::InvalidInput),
+        e => panic!("unexpected error: {e:?}"),
+    }
 }
 
 const VARLINK_XATTR: &str = "user.varlink";
