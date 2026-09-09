@@ -297,6 +297,26 @@ umask at `bind` time also hides the tag from other users. Like `sd-varlink`, zli
 inode when `bind` was given an absolute path; listeners adopted from a file descriptor or bound
 to a relative path only get the `listen` tag, since their inode cannot be located safely.
 
+A service can publish attributes of its own on its entrypoint inode with `Listener::set_xattr`, so
+that clients and tooling learn something about it before connecting. systemd's user database, for
+instance, reads `user.userdb.uid` and friends to skip providers that cannot serve a query. The
+method is part of the `Listener` trait and, like the attributes themselves, only exists on Linux.
+It fails with `Unsupported` for listeners without a socket of their own such as `ReadyListener`,
+and with `InvalidInput` for a listener adopted from a file descriptor or bound to a relative path,
+whose entrypoint inode is unknown.
+
+```rust,noplayground
+# use zlink::Listener as _;
+# fn example() -> Result<(), Box<dyn std::error::Error>> {
+let listener = zlink::tokio::unix::bind("/run/user/1000/io.example.Accounts")?;
+#[cfg(target_os = "linux")]
+if let Err(e) = listener.set_xattr("user.userdb.uid", "1000-1999") {
+    eprintln!("could not publish the UID range: {e}");
+}
+# Ok(())
+# }
+```
+
 ## Under the hood: the `Service` trait
 
 The `service` macro is sugar for implementing the `zlink::Service` trait, whose `handle` method
