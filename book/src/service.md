@@ -284,6 +284,19 @@ Beyond `unix::bind`, a `Listener` can be created from an inherited file descript
 socket, `ReadyListener` wraps that one connection; `Server::run` then serves it and returns cleanly
 when the client disconnects.
 
+## Discoverable sockets
+
+On Linux, zlink tags every socket it creates with a `user.varlink` extended attribute, following
+the convention systemd's `sd-varlink` established in v262: the socket inode `bind` creates is
+marked `entrypoint`, the listener itself `listen`, connected client sockets `client` and accepted
+ones `server`. This is what lets `varlinkctl list-sockets` enumerate the Varlink services on a
+system, and what future eBPF-based tracing of Varlink traffic will key on. Tagging is best effort:
+kernels older than Linux 7.1 do not allow extended attributes on sockets and are silently tolerated.
+Extended attributes are only readable by users who may read the inode itself, so a restrictive
+umask at `bind` time also hides the tag from other users. Like `sd-varlink`, zlink only tags the
+inode when `bind` was given an absolute path; listeners adopted from a file descriptor or bound
+to a relative path only get the `listen` tag, since their inode cannot be located safely.
+
 ## Under the hood: the `Service` trait
 
 The `service` macro is sugar for implementing the `zlink::Service` trait, whose `handle` method
